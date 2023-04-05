@@ -1,0 +1,68 @@
+---
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+rm(list = ls())
+
+library("tidyverse")
+library("janitor")
+library("coinmarketcapr")
+library("notionR")
+
+# setup coinmarketcap api 
+# ?coinmarketcapr::setup
+# coinmarketcapr::setup()
+# get_api_info()
+
+# setup notion api and add table 
+# dont forget to share integration with database page
+notion_secret = "put-notion-secret-here"
+notion_database = "b562ec907c1243498904a5139326a0a7"
+
+# pull existing notion data 
+notion_prices = getNotionDatabase(
+  notion_secret, notion_database) %>% 
+  janitor::clean_names() %>% 
+  rename(symbol = properties_name_title_plain_text,
+         my_tokens = properties_my_tokens_number) %>%
+  mutate(notion_id = str_replace_all(id, "-", ""),
+         my_tokens = as.numeric(my_tokens)) %>%
+  select(notion_id, symbol, my_tokens)
+notion_prices
+
+# update this list to the tokens you want 
+crypto_symbols = c("BTC", "ETH", "GRT", "MATIC", "DOT", "ALGO", "MANA", 
+                   "USDC","WETH", "AZERO", "SOL", "FAB", "FIDA", "CWAR", "POLIS")
+
+# grab the prices and add them to a database (sorry its hacky)
+current_prices = get_crypto_quotes(currency = "USD",
+                                   symbol = crypto_symbols)
+first_step = map_df(current_prices$quote, ~as.data.frame(t(.)))
+second_step = round(as.data.frame(unlist(first_step[1])), 2)
+second_step$usd_price = second_step$`unlist(first_step[1])`
+current_prices = data.frame(symbol = (current_prices$symbol),
+                            usd_price = second_step$usd_price)
+rm(first_step, second_step)
+
+# multiply the token prices by existing holdings 
+current_prices = current_prices %>% 
+  full_join(notion_prices, by = "symbol") %>% 
+  mutate(now_sum = (my_tokens * usd_price)) %>% 
+  select(notion_id, symbol, my_tokens, usd_price, now_sum) %>% 
+  drop_na(notion_id) %>% 
+  arrange(-now_sum)
+
+# update the pricing table in notion 
+for (i in 1:nrow(current_prices)) { 
+  updateNumber(notion_secret, current_prices$notion_id[i], 
+              "MyTokens",  current_prices$my_tokens[i])
+  updateNumber(notion_secret, current_prices$notion_id[i], 
+              "NowUSD",  current_prices$usd_price[i])
+}
+
+# get the sum to update your monthlies 
+sum(current_prices$my_tokens * current_prices$usd_price)
+
+```
